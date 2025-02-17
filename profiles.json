@@ -11,8 +11,10 @@
         "first_name": "Иван",
         "status": "Сплю 😴"
     },
-    "example": {
-        "first_name": "Your Name",
-        "status": "Your Status 😊"
+    "пример": {
+        "first_name": "Иван",
+        "last_name": "Иванов",
+        "status": "Пример статуса 😊",
+        "emoji_status": null
     }
 } 
