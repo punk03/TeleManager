@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  telegram-profile-bot:
+    build: .
+    container_name: telegram-profile-bot
+    restart: unless-stopped
+    volumes:
+      - ./sessions:/app/sessions
+      - ./config:/app/config
+      - ./profiles.json:/app/profiles.json
+    environment:
+      - TZ=Europe/Moscow
+    env_file:
+      - .env 

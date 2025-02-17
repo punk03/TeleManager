@@ -13,6 +13,8 @@
 
 ## Установка
 
+### Способ 1: Обычная установка
+
 1. Установите Python 3.8 или выше
 2. Клонируйте репозиторий:
 ```bash
@@ -22,6 +24,15 @@ cd TeleManager
 3. Установите зависимости:
 ```bash
 pip install -r requirements.txt
+```
+
+### Способ 2: Установка через Docker
+
+1. Установите [Docker](https://docs.docker.com/get-docker/) и [Docker Compose](https://docs.docker.com/compose/install/)
+2. Клонируйте репозиторий:
+```bash
+git clone https://github.com/punk03/TeleManager.git
+cd TeleManager
 ```
 
 ## Настройка
@@ -39,13 +50,39 @@ OWNER_ID=your_telegram_id
 
 ## Запуск
 
-### Windows
+### Способ 1: Обычный запуск
+
+#### Windows
 Запустите `start_bot.bat`
 
-### Linux/Mac
+#### Linux/Mac
 ```bash
 python telegram_profile_bot.py
 ```
+
+### Способ 2: Запуск через Docker
+
+1. Соберите и запустите контейнер:
+```bash
+docker-compose up -d --build
+```
+
+2. Просмотр логов:
+```bash
+docker-compose logs -f
+```
+
+3. Остановка бота:
+```bash
+docker-compose down
+```
+
+### Управление данными в Docker
+
+- Все сессии сохраняются в директории `sessions/`
+- Профили хранятся в файле `profiles.json`
+- Конфигурация в директории `config/`
+- Все данные сохраняются между перезапусками контейнера
 
 ## Использование
 
@@ -66,6 +103,8 @@ python telegram_profile_bot.py
 
 ## Установка как службы Windows
 
+> ⚠️ Этот метод доступен только при обычной установке (не Docker)
+
 1. Запустите `install_service.bat` от имени администратора
 2. Служба будет установлена и запущена автоматически
 3. Для удаления службы используйте `uninstall_service.bat`
@@ -75,9 +114,11 @@ python telegram_profile_bot.py
 - Бот работает только с одним владельцем (указанным в OWNER_ID)
 - Все конфиденциальные данные хранятся в файле .env
 - Сессии Telegram хранятся локально
+- При использовании Docker все данные изолированы в контейнере
 
 ## Примечания
 
 - Для использования эмодзи-статусов требуется Telegram Premium
 - При первом запуске потребуется авторизация в вашем аккаунте Telegram
-- Бот поддерживает работу в фоновом режиме через службу Windows 
+- В Docker-версии все данные сохраняются в volumes и доступны между перезапусками
+- Часовой пояс в Docker-контейнере установлен на Europe/Moscow (можно изменить в docker-compose.yml) 
