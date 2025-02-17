@@ -1,6 +1,5 @@
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.account import UpdateProfileRequest
-from telethon.tl.functions.account import UpdateEmojiStatusRequest
+from telethon.tl.functions.account import UpdateProfileRequest, UpdateEmojiStatusRequest
 from telethon.tl.types import EmojiStatus
 import asyncio
 from datetime import datetime, timedelta
@@ -8,6 +7,7 @@ import json
 import logging
 import sys
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from config.config import API_ID, API_HASH, BOT_TOKEN, PROFILES_FILE, SESSION_NAME, OWNER_ID
 
 def setup_logging(debug_mode):
@@ -58,18 +58,34 @@ bot_client = TelegramClient(SESSION_NAME + "_bot", API_ID, API_HASH)
 user_client = TelegramClient(SESSION_NAME + "_user", API_ID, API_HASH)
 scheduler = AsyncIOScheduler()
 
+# Глобальная переменная для хранения ID последнего сообщения с уведомлением
+LAST_NOTIFICATION = None
+
+async def send_notification(message):
+    """Отправка уведомления в чат с ботом"""
+    global LAST_NOTIFICATION
+    try:
+        if LAST_NOTIFICATION:
+            try:
+                await LAST_NOTIFICATION.delete()
+            except:
+                pass
+        LAST_NOTIFICATION = await bot_client.send_message(OWNER_ID, message)
+    except Exception as e:
+        logging.error(f"Ошибка при отправке уведомления: {e}")
+
 def is_owner(event):
     """Проверка, является ли отправитель владельцем бота"""
     return event.sender_id == OWNER_ID
 
-async def change_profile(profile_name):
+async def change_profile(profile_name, notify=True):
+    """Изменение профиля с опциональным уведомлением"""
     if profile_name in PRESET_PROFILES:
         profile = PRESET_PROFILES[profile_name]
         await user_client(UpdateProfileRequest(
             first_name=profile['first_name'],
-            last_name=profile['last_name']
+            last_name=profile.get('last_name', '')
         ))
-        # Устанавливаем эмодзи-статус, если он задан
         if 'emoji_status' in profile and profile['emoji_status']:
             try:
                 await user_client(UpdateEmojiStatusRequest(
@@ -77,6 +93,17 @@ async def change_profile(profile_name):
                 ))
             except Exception as e:
                 logging.error(f"Ошибка при установке эмодзи-статуса: {e}")
+        
+        if notify:
+            current_time = datetime.now().strftime("%H:%M")
+            notification = f"🔄 Профиль изменен на «{profile_name}» в {current_time}\n"
+            notification += f"👤 Имя: {profile['first_name']}\n"
+            if profile.get('last_name'):
+                notification += f"👥 Фамилия: {profile['last_name']}\n"
+            if profile.get('status'):
+                notification += f"💭 Статус: {profile['status']}\n"
+            await send_notification(notification)
+        
         return f"Профиль изменен на {profile_name}"
     return "Профиль не найден"
 
@@ -113,6 +140,7 @@ async def get_schedule_keyboard():
         keyboard.append([
             Button.text(f"⏰ {profile_name}")
         ])
+    keyboard.append([Button.text("📋 Список расписаний")])
     keyboard.append([Button.text("🗑 Очистить расписание")])
     keyboard.append([Button.text("◀️ Назад")])
     return keyboard
@@ -320,65 +348,184 @@ async def schedule_handler(event):
     )
     raise events.StopPropagation()
 
-@bot_client.on(events.NewMessage(func=lambda e: e.sender_id in STATES and STATES[e.sender_id]["state"] in ["waiting_schedule_hour", "waiting_schedule_minute"]))
-async def schedule_time_handler(event):
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "📋 Список расписаний"))
+async def list_schedules_handler(event):
+    if not is_owner(event):
+        return
+
+    jobs = scheduler.get_jobs()
+    schedule_text = "📅 Активные расписания:\n\n"
+    
+    if not jobs:
+        schedule_text = "Нет активных расписаний"
+    else:
+        for job in jobs:
+            if not job.id.startswith('temp_'):
+                profile_name = job.args[0] if job.args else "неизвестный профиль"
+                trigger = job.trigger
+                
+                if isinstance(trigger, CronTrigger):
+                    schedule_text += f"⏰ {profile_name}:\n"
+                    schedule_text += f"   🕒 Время: {trigger.fields[3]:02d}:{trigger.fields[4]:02d}\n"
+                    
+                    # Добавляем информацию о днях недели
+                    days = trigger.fields[5]
+                    if days == "*":
+                        schedule_text += "   📆 Дни: Ежедневно\n"
+                    else:
+                        day_names = {
+                            0: "Понедельник", 1: "Вторник", 2: "Среда",
+                            3: "Четверг", 4: "Пятница", 5: "Суббота", 6: "Воскресенье"
+                        }
+                        schedule_text += "   📆 Дни: " + ", ".join([day_names[d] for d in days]) + "\n"
+                    schedule_text += "\n"
+
+    await event.reply(schedule_text, buttons=await get_schedule_keyboard())
+
+@bot_client.on(events.NewMessage(pattern=r"^⏰ .*$"))
+async def schedule_profile_start(event):
+    if not is_owner(event):
+        return
+
+    profile_name = event.text[2:].strip()
+    if profile_name not in PRESET_PROFILES:
+        await event.reply(
+            "Ошибка: профиль не найден в списке профилей.",
+            buttons=await get_schedule_keyboard()
+        )
+        return
+
+    STATES[event.sender_id] = {
+        "state": "waiting_schedule_days",
+        "profile_name": profile_name
+    }
+    
+    # Клавиатура для выбора дней недели
+    days_keyboard = [
+        [Button.text("Пн"), Button.text("Вт"), Button.text("Ср")],
+        [Button.text("Чт"), Button.text("Пт"), Button.text("Сб")],
+        [Button.text("Вс"), Button.text("Ежедневно")],
+        [Button.text("◀️ Отмена")]
+    ]
+    
+    await event.reply(
+        f"Настройка расписания для профиля {profile_name}\n"
+        "Выберите дни недели (можно выбрать несколько):",
+        buttons=days_keyboard
+    )
+    raise events.StopPropagation()
+
+@bot_client.on(events.NewMessage(func=lambda e: e.sender_id in STATES and STATES[e.sender_id]["state"] == "waiting_schedule_days"))
+async def schedule_days_handler(event):
     if not is_owner(event):
         return
 
     state = STATES[event.sender_id]
-    profile_name = state["profile_name"]
+    
+    if event.text == "◀️ Отмена":
+        del STATES[event.sender_id]
+        await event.reply("Настройка расписания отменена.", buttons=await get_schedule_keyboard())
+        return
+    
+    if event.text == "Ежедневно":
+        state["days"] = "*"
+    else:
+        day_map = {
+            "Пн": 0, "Вт": 1, "Ср": 2, "Чт": 3,
+            "Пт": 4, "Сб": 5, "Вс": 6
+        }
+        if event.text not in day_map:
+            await event.reply("Пожалуйста, выберите день из предложенных вариантов.")
+            return
+            
+        if "days" not in state:
+            state["days"] = set()
+        state["days"].add(day_map[event.text])
+    
+    if isinstance(state["days"], set):
+        days_text = ", ".join(k for k, v in day_map.items() if v in state["days"])
+    else:
+        days_text = "Ежедневно"
+    
+    state["state"] = "waiting_schedule_hour"
+    await event.reply(
+        f"Выбранные дни: {days_text}\n"
+        "Теперь введите час (0-23):",
+        buttons=[[Button.text("◀️ Отмена")]]
+    )
+
+@bot_client.on(events.NewMessage(func=lambda e: e.sender_id in STATES and STATES[e.sender_id]["state"] in ["waiting_schedule_hour", "waiting_schedule_minute"]))
+async def schedule_time_handler(event):
+    if not is_owner(event):
+        return
 
     if event.text == "◀️ Отмена":
         del STATES[event.sender_id]
         await event.reply("Настройка расписания отменена.", buttons=await get_schedule_keyboard())
         return
 
-    if state["state"] == "waiting_schedule_hour":
-        try:
+    state = STATES[event.sender_id]
+    
+    try:
+        if state["state"] == "waiting_schedule_hour":
             hour = int(event.text)
             if 0 <= hour <= 23:
                 state["hour"] = hour
                 state["state"] = "waiting_schedule_minute"
-                await event.reply(
-                    f"Введите минуты (0-59):",
-                    buttons=[[Button.text("◀️ Отмена")]]
-                )
+                await event.reply("Введите минуты (0-59):")
             else:
                 await event.reply("Пожалуйста, введите число от 0 до 23:")
-        except ValueError:
-            await event.reply("Пожалуйста, введите корректное число от 0 до 23:")
-
-    elif state["state"] == "waiting_schedule_minute":
-        try:
+        
+        elif state["state"] == "waiting_schedule_minute":
             minute = int(event.text)
             if 0 <= minute <= 59:
-                hour = state["hour"]
-                
-                # Удаляем существующее расписание для этого профиля
+                # Удаляем существующие задачи для этого профиля
                 for job in scheduler.get_jobs():
-                    if not job.id.startswith('temp_') and job.args and job.args[0] == profile_name:
+                    if job.args and job.args[0] == state["profile_name"]:
                         job.remove()
                 
-                # Создаем новое расписание
-                scheduler.add_job(
-                    change_profile,
-                    'cron',
-                    hour=hour,
-                    minute=minute,
-                    args=[profile_name],
-                    id=f'schedule_{profile_name}'
-                )
+                # Добавляем новую задачу с учетом выбранных дней
+                if state["days"] == "*":
+                    scheduler.add_job(
+                        change_profile,
+                        'cron',
+                        hour=state["hour"],
+                        minute=minute,
+                        args=[state["profile_name"]],
+                        id=f'schedule_{state["profile_name"]}'
+                    )
+                else:
+                    scheduler.add_job(
+                        change_profile,
+                        'cron',
+                        day_of_week=",".join(str(d) for d in state["days"]),
+                        hour=state["hour"],
+                        minute=minute,
+                        args=[state["profile_name"]],
+                        id=f'schedule_{state["profile_name"]}'
+                    )
+                
+                # Формируем сообщение о расписании
+                if state["days"] == "*":
+                    days_text = "ежедневно"
+                else:
+                    day_names = {
+                        0: "понедельник", 1: "вторник", 2: "среда",
+                        3: "четверг", 4: "пятница", 5: "суббота", 6: "воскресенье"
+                    }
+                    days_text = ", ".join(day_names[d] for d in state["days"])
                 
                 await event.reply(
-                    f"Расписание установлено! Профиль {profile_name} будет активироваться каждый день в {hour:02d}:{minute:02d}",
+                    f"Расписание установлено! Профиль {state['profile_name']} будет "
+                    f"активироваться в {state['hour']:02d}:{minute:02d} "
+                    f"по следующим дням: {days_text}",
                     buttons=await get_schedule_keyboard()
                 )
                 del STATES[event.sender_id]
             else:
                 await event.reply("Пожалуйста, введите число от 0 до 59:")
-        except ValueError:
-            await event.reply("Пожалуйста, введите корректное число от 0 до 59:")
-    raise events.StopPropagation()
+    except ValueError:
+        await event.reply("Пожалуйста, введите корректное число:")
 
 @bot_client.on(events.NewMessage(func=lambda e: e.text == "🗑 Очистить расписание"))
 async def clear_schedule_handler(event):
@@ -544,31 +691,6 @@ async def get_emoji_status_handler(event):
                 await event.reply(f"ID эмодзи-статуса: {document_id}")
         except Exception as e:
             logging.error(f"Ошибка при получении эмодзи-статуса: {e}")
-
-@bot_client.on(events.NewMessage(pattern=r"^⏰ .*$"))
-async def schedule_profile_start(event):
-    if not is_owner(event):
-        return
-
-    profile_name = event.text[2:].strip()  # Добавляем strip() для удаления лишних пробелов
-    if profile_name not in PRESET_PROFILES:
-        await event.reply(
-            "Ошибка: профиль не найден в списке профилей. Пожалуйста, выберите профиль из списка.",
-            buttons=await get_schedule_keyboard()
-        )
-        return
-
-    STATES[event.sender_id] = {
-        "state": "waiting_schedule_hour",
-        "profile_name": profile_name
-    }
-    
-    await event.reply(
-        f"Настройка расписания для профиля {profile_name}\n"
-        "Введите час (0-23):",
-        buttons=[[Button.text("◀️ Отмена")]]
-    )
-    raise events.StopPropagation()
 
 @bot_client.on(events.NewMessage(func=lambda e: e.text == "🔄 Включить постоянно"))
 async def activate_profile_permanent(event):
