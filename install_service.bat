@@ -1,16 +1,33 @@
 @echo off
-echo Установка виртуального окружения...
-python -m venv venv
-call venv\Scripts\activate.bat
+chcp 65001 > nul
+setlocal
 
-echo Установка зависимостей...
+:: Проверка на права администратора
+NET SESSION >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Требуются права администратора!
+    echo Пожалуйста, запустите скрипт от имени администратора.
+    pause
+    exit /b 1
+)
+
+echo Установка необходимых зависимостей...
 pip install -r requirements.txt
+if errorlevel 1 (
+    echo Ошибка при установке зависимостей!
+    pause
+    exit /b 1
+)
 
+echo.
 echo Установка службы...
-python windows_service.py install
+python install_service.py
+if errorlevel 1 (
+    echo Ошибка при установке службы!
+    pause
+    exit /b 1
+)
 
-echo Запуск службы...
-python windows_service.py start
-
-echo Готово! Служба установлена и запущена.
+echo.
+echo Готово! Служба установлена.
 pause 
