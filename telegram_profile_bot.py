@@ -570,6 +570,144 @@ async def schedule_profile_start(event):
     )
     raise events.StopPropagation()
 
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "🔄 Включить постоянно"))
+async def activate_profile_permanent(event):
+    if not is_owner(event):
+        return
+
+    if event.sender_id not in STATES or "profile_name" not in STATES[event.sender_id]:
+        await event.reply("Сначала выберите профиль", buttons=await get_profiles_keyboard())
+        return
+
+    profile_name = STATES[event.sender_id]["profile_name"]
+    
+    # Удаляем все временные задачи для этого профиля
+    for job in scheduler.get_jobs():
+        if job.args and job.args[0] == profile_name and job.id.startswith('temp_'):
+            job.remove()
+    
+    result = await change_profile(profile_name)
+    del STATES[event.sender_id]
+    
+    await event.reply(
+        f"{result}. Профиль будет активен постоянно.",
+        buttons=await get_profiles_keyboard()
+    )
+    raise events.StopPropagation()
+
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "⏱ Включить на время"))
+async def activate_profile_temporary(event):
+    if not is_owner(event):
+        return
+
+    if event.sender_id not in STATES or "profile_name" not in STATES[event.sender_id]:
+        await event.reply("Сначала выберите профиль", buttons=await get_profiles_keyboard())
+        return
+
+    STATES[event.sender_id]["state"] = "waiting_duration"
+    
+    await event.reply(
+        "Выберите длительность:",
+        buttons=await get_duration_keyboard()
+    )
+    raise events.StopPropagation()
+
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "📅 Включить до расписания"))
+async def activate_profile_until_schedule(event):
+    if not is_owner(event):
+        return
+
+    if event.sender_id not in STATES or "profile_name" not in STATES[event.sender_id]:
+        await event.reply("Сначала выберите профиль", buttons=await get_profiles_keyboard())
+        return
+
+    profile_name = STATES[event.sender_id]["profile_name"]
+    
+    # Находим следующую запланированную смену профиля
+    next_job = None
+    next_run_time = None
+    for job in scheduler.get_jobs():
+        if not job.id.startswith('temp_'):  # Пропускаем временные задачи
+            if next_run_time is None or job.next_run_time < next_run_time:
+                next_job = job
+                next_run_time = job.next_run_time
+
+    # Активируем профиль
+    result = await change_profile(profile_name)
+    
+    if next_run_time is None:
+        await event.reply(
+            f"{result}\nНет активных расписаний. Профиль будет активен постоянно.",
+            buttons=await get_profiles_keyboard()
+        )
+    else:
+        next_change = next_run_time.strftime("%H:%M")
+        next_profile = next_job.args[0] if next_job.args else "неизвестный профиль"
+        
+        await event.reply(
+            f"{result}\nПрофиль будет активен до {next_change} "
+            f"(следующая автоматическая смена на {next_profile})",
+            buttons=await get_profiles_keyboard()
+        )
+    
+    del STATES[event.sender_id]
+    raise events.StopPropagation()
+
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "✏️ Редактировать"))
+async def edit_profile_start(event):
+    if not is_owner(event):
+        return
+
+    if event.sender_id not in STATES or "profile_name" not in STATES[event.sender_id]:
+        await event.reply("Сначала выберите профиль", buttons=await get_profiles_keyboard())
+        return
+
+    profile_name = STATES[event.sender_id]["profile_name"]
+    STATES[event.sender_id] = {
+        "state": "waiting_first_name",
+        "profile_name": profile_name
+    }
+    
+    await event.reply(
+        f"Редактирование профиля {profile_name}\nВведите новое имя:",
+        buttons=[[Button.text("◀️ Отмена")]]
+    )
+    raise events.StopPropagation()
+
+@bot_client.on(events.NewMessage(func=lambda e: e.text == "❌ Удалить"))
+async def delete_profile(event):
+    if not is_owner(event):
+        return
+
+    if event.sender_id not in STATES or "profile_name" not in STATES[event.sender_id]:
+        await event.reply("Сначала выберите профиль", buttons=await get_profiles_keyboard())
+        return
+
+    profile_name = STATES[event.sender_id]["profile_name"]
+    
+    # Удаляем все задачи для этого профиля
+    for job in scheduler.get_jobs():
+        if job.args and job.args[0] == profile_name:
+            job.remove()
+    
+    # Удаляем профиль
+    if profile_name in PRESET_PROFILES:
+        del PRESET_PROFILES[profile_name]
+        save_profiles(PRESET_PROFILES)
+        
+        await event.reply(
+            f"Профиль {profile_name} удален!",
+            buttons=await get_profiles_keyboard()
+        )
+    else:
+        await event.reply(
+            "Профиль не найден!",
+            buttons=await get_profiles_keyboard()
+        )
+    
+    del STATES[event.sender_id]
+    raise events.StopPropagation()
+
 async def main(debug_mode=False):
     setup_logging(debug_mode)
     scheduler.start()
